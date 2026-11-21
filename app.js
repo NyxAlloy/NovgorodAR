@@ -13,6 +13,7 @@ function closeCamera(message = '') {
     const current = session;
     session = null;
     clearTimeout(current.timer);
+    current.targetRequest?.abort();
     current.setVisible?.(false);
     if (current.ready) {
       try { current.system.stop(); }
@@ -23,11 +24,56 @@ function closeCamera(message = '') {
       video.srcObject?.getTracks().forEach(track => track.stop());
     }
     current.frame.remove();
+    if (current.targetURL) URL.revokeObjectURL(current.targetURL);
   }
   hud.hidden = true;
   intro.hidden = false;
   introError.textContent = message;
   startButton.focus({preventScroll: true});
+}
+
+async function loadCoverTarget(current, system) {
+  const frame = current.frame.contentWindow;
+  const source = new URL(system.imageTargetSrc, current.frame.contentDocument.baseURI);
+  const sources = [{url: source.href}];
+  const project = /^\/NyxAlloy\/NovgorodAR\/([^/]+)\/targets\.mind$/i.exec(source.pathname);
+  if (project && ['raw.githack.com', 'rawcdn.githack.com'].includes(source.hostname)) {
+    sources.unshift(
+      {url: 'https://raw.githubusercontent.com' + source.pathname},
+      {
+        url: 'https://api.github.com/repos/NyxAlloy/NovgorodAR/contents/targets.mind?ref=' + project[1],
+        headers: {Accept: 'application/vnd.github.raw+json'}
+      }
+    );
+  }
+
+  for (const {url, headers} of sources) {
+    const request = new AbortController();
+    current.targetRequest = request;
+    const timeout = setTimeout(() => request.abort(), 20000);
+    try {
+      const response = await fetch(url, {headers, signal: request.signal});
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const bytes = await response.arrayBuffer();
+      if (session !== current) return false;
+      // Decode with the same MindAR reader that will start tracking this cover.
+      const targets = new frame.MINDAR.IMAGE.Compiler().importData(bytes);
+      if (!targets.length || !targets[0].matchingData?.length || !targets[0].trackingData?.length) {
+        throw new Error('Файл не содержит данных распознавания обложки');
+      }
+      current.targetURL = URL.createObjectURL(new Blob([bytes], {type: 'application/octet-stream'}));
+      system.imageTargetSrc = current.targetURL;
+      return true;
+    } catch (error) {
+      if (session !== current) return false;
+      console.warn('Загрузка данных обложки', url, error);
+    } finally {
+      clearTimeout(timeout);
+      current.targetRequest = null;
+    }
+  }
+  closeCamera('Не удалось скачать данные обложки. Проверьте подключение к интернету и нажмите «Включить камеру» ещё раз.');
+  return false;
 }
 
 function connectScene(current) {
@@ -49,13 +95,8 @@ function connectScene(current) {
     }
     try {
       current.system = system;
-      const marker = await fetch('./targets.mind', {method: 'HEAD'});
-      if (session !== current) return;
-      const headUnsupported = marker.status === 405 || marker.status === 501;
-      if (!headUnsupported && (!marker.ok || marker.headers.get('content-type')?.includes('text/html'))) {
-        closeCamera('Не удалось загрузить targets.mind. Проверьте, что файл находится рядом с index.html.');
-        return;
-      }
+      statusEl.textContent = 'Загружаем данные обложки…';
+      if (!await loadCoverTarget(current, system) || session !== current) return;
       current.setVisible = createEffects(doc);
       const target = doc.getElementById('coverTarget');
       function track(visible) {
@@ -120,7 +161,7 @@ function openCamera() {
   statusEl.textContent = 'Загружаем сцену…';
   stopButton.focus({preventScroll: true});
   current.timer = setTimeout(() => {
-    if (session === current) closeCamera('Запуск занял слишком много времени. Проверьте доступ к камере, интернет и наличие targets.mind рядом с index.html.');
+    if (session === current) closeCamera('Запуск занял слишком много времени. Проверьте доступ к камере и интернет, затем повторите попытку.');
   }, 90000);
   frame.addEventListener('load', () => connectScene(current), {once: true});
   document.body.append(frame);
