@@ -7,74 +7,41 @@ const statusEl = document.getElementById('status');
 const startButton = document.getElementById('startButton');
 const stopButton = document.getElementById('stopButton');
 const sceneAudio = document.getElementById('sceneAudio');
+// HTMLAudio + muted is what iOS/Android actually keep alive after the camera starts.
+// Web Audio after await fetch() leaves the user-gesture window and stays silent on phones.
 const AudioCtl = (() => {
-  let ctx;
-  let gain;
-  let source;
-  let buffer;
-  let heard = false;
+  let unlocked = false;
 
-  async function unlock() {
-    const AudioContext = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContext) {
-      sceneAudio.loop = true;
-      sceneAudio.volume = 0.001;
-      await sceneAudio.play().catch(() => {});
-      return;
+  function unlock() {
+    sceneAudio.loop = true;
+    sceneAudio.playsInline = true;
+    sceneAudio.setAttribute('playsinline', '');
+    sceneAudio.setAttribute('webkit-playsinline', '');
+    sceneAudio.muted = true;
+    sceneAudio.volume = 1;
+    // play() must be called inside the tap handler, before any await.
+    const playing = sceneAudio.play();
+    unlocked = true;
+    if (playing && typeof playing.then === 'function') {
+      playing.catch((error) => console.warn('Звук', error));
     }
-    if (!ctx) ctx = new AudioContext();
-    if (ctx.state === 'suspended') await ctx.resume();
-    if (!buffer) {
-      const response = await fetch(sceneAudio.currentSrc || sceneAudio.src);
-      buffer = await ctx.decodeAudioData(await response.arrayBuffer());
-    }
-    if (!gain) {
-      gain = ctx.createGain();
-      gain.gain.value = 0.0001;
-      gain.connect(ctx.destination);
-    }
-    if (!source) {
-      source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.loop = true;
-      source.connect(gain);
-      source.start(0);
-    }
-    setHeard(heard);
+    return playing;
   }
 
   function setHeard(next) {
-    heard = next;
-    if (gain && ctx) {
-      const now = ctx.currentTime;
-      gain.gain.cancelScheduledValues(now);
-      gain.gain.setTargetAtTime(next ? 0.85 : 0.0001, now, 0.04);
-      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-      return;
-    }
-    sceneAudio.volume = next ? 1 : 0.001;
-    if (next) sceneAudio.play().catch(() => {});
-    else {
-      sceneAudio.pause();
-      sceneAudio.currentTime = 0;
+    if (!unlocked) return;
+    sceneAudio.muted = !next;
+    sceneAudio.volume = 1;
+    if (next && sceneAudio.paused) {
+      sceneAudio.play().catch((error) => console.warn('Звук', error));
     }
   }
 
   function stop() {
-    heard = false;
-    if (source) {
-      try { source.stop(); } catch (error) { /* already stopped */ }
-      source.disconnect();
-      source = null;
-    }
-    if (gain && ctx) {
-      gain.gain.cancelScheduledValues(ctx.currentTime);
-      gain.gain.value = 0.0001;
-    }
-    if (ctx && ctx.state !== 'closed') ctx.suspend().catch(() => {});
+    sceneAudio.muted = true;
     sceneAudio.pause();
     sceneAudio.currentTime = 0;
-    sceneAudio.volume = 0.001;
+    unlocked = false;
   }
 
   return {unlock, setHeard, stop};
@@ -321,7 +288,8 @@ async function openCamera() {
   }
   opening = true;
   startButton.disabled = true;
-  const unlockAudio = AudioCtl.unlock().catch((error) => console.warn('Звук', error));
+  // Unlock audio in this same tap, before awaiting camera permission.
+  AudioCtl.unlock();
   let preview;
   try {
     // The prompt must come from this click. MindAR asks again later, inside the scene.
@@ -329,7 +297,6 @@ async function openCamera() {
       video: {facingMode: {ideal: 'environment'}},
       audio: false
     });
-    await unlockAudio;
   } catch (error) {
     opening = false;
     startButton.disabled = false;
@@ -358,7 +325,7 @@ async function openCamera() {
   }, 90000);
   frame.addEventListener('load', () => connectScene(current));
   document.body.append(frame);
-  frame.src = './scene.html?v=11';
+  frame.src = './scene.html?v=12';
 }
 
 startButton.addEventListener('click', openCamera);

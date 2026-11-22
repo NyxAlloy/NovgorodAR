@@ -1,6 +1,6 @@
 # Новгородские Вести — WebAR
 
-**[Открыть WebAR на телефоне](https://raw.githack.com/NyxAlloy/NovgorodAR/main/index.html)** · [Обложка для второго экрана или печати](assets/cover.jpg)
+**[Открыть WebAR на телефоне](https://raw.githack.com/NyxAlloy/NovgorodAR/Development/index.html)** · [Обложка для второго экрана или печати](assets/cover.jpg)
 
 Откройте демо в Safari на iPhone или Chrome на Android. Если raw.githack покажет кнопку **Open the page**, нажмите её. На экране «Газета оживает» нажмите **Включить камеру**, разрешите доступ и наведите телефон на обложку. Компьютер с локальным сервером для этого не нужен.
 

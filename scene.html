@@ -5,17 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#161828" />
   <title>Камера — Новгородские Вести</title>
-  <link rel="stylesheet" href="styles.css?v=5" />
+  <link rel="stylesheet" href="styles.css?v=12" />
   <!-- Те же версии 1.5.0 и 1.2.5, но рядом со страницей: внешний CDN больше не нужен для запуска. -->
   <script src="vendor/aframe.min.js" onerror="window.__scriptError='aframe'"></script>
   <script src="vendor/mindar-image-aframe.prod.js" onerror="window.__scriptError='mindar'"></script>
 </head>
 <body class="camera-stage">
-  <canvas id="effectsCanvas" width="512" height="724" hidden></canvas>
-  <canvas id="treeCanvas" width="512" height="711" hidden></canvas>
+  <!-- Нельзя ставить hidden/display:none: на телефоне WebGL тогда не обновляет текстуру с холста. -->
+  <canvas id="effectsCanvas" class="fx-canvas" width="512" height="724"></canvas>
+  <canvas id="treeCanvas" class="fx-canvas" width="512" height="711"></canvas>
 
   <a-scene id="arScene"
-           mindar-image="imageTargetSrc: ./targets.mind?v=11; autoStart: false; maxTrack: 2; warmupTolerance: 3; missTolerance: 5; uiLoading: no; uiScanning: no; uiError: no"
+           mindar-image="imageTargetSrc: ./targets.mind?v=12; autoStart: false; maxTrack: 2; warmupTolerance: 3; missTolerance: 5; uiLoading: no; uiScanning: no; uiError: no"
            embedded
            renderer="alpha: true; colorManagement: true"
            vr-mode-ui="enabled: false"
@@ -25,17 +26,17 @@
       <!-- Размер газеты: 1055 × 1491, поэтому height = 1491 / 1055. -->
       <!-- Полупрозрачные эффекты закреплены на плоскости самой обложки. -->
       <a-plane id="snowLayer"
-               position="0 0 0" visible="false"
+               position="0 0 0.01" visible="false"
                width="1" height="1.41327"
-               material="shader: flat; src: #effectsCanvas; transparent: true; opacity: 1; side: double; depthWrite: false">
+               material="shader: flat; src: #effectsCanvas; transparent: true; opacity: 1; side: double; depthWrite: false; npot: true">
       </a-plane>
     </a-entity>
     <a-entity id="poemTarget" mindar-image-target="targetIndex: 1">
       <!-- Карточка стихотворения: 720 × 1000, height = 1000 / 720. -->
       <a-plane id="treeLayer"
-               position="0 0 0" visible="false"
+               position="0 0 0.01" visible="false"
                width="1" height="1.38889"
-               material="shader: flat; src: #treeCanvas; transparent: true; opacity: 1; side: double; depthWrite: false">
+               material="shader: flat; src: #treeCanvas; transparent: true; opacity: 1; side: double; depthWrite: false; npot: true">
       </a-plane>
     </a-entity>
   </a-scene>
