@@ -1,267 +1,369 @@
 'use strict';
 
 const intro = document.getElementById('intro');
-const stage = document.getElementById('cameraStage');
-const video = document.getElementById('camera');
-const canvas = document.getElementById('effectsCanvas');
-const start = document.getElementById('startButton');
-const stop = document.getElementById('stopButton');
-const retry = document.getElementById('retryButton');
-const statusLabel = document.getElementById('status');
-const detailLabel = document.getElementById('detail');
-let session;
-let setEffects;
-let engine;
+const introError = document.getElementById('introError');
+const hud = document.getElementById('hud');
+const statusEl = document.getElementById('status');
+const startButton = document.getElementById('startButton');
+const stopButton = document.getElementById('stopButton');
+const sceneAudio = document.getElementById('sceneAudio');
+const AudioCtl = (() => {
+  let ctx;
+  let gain;
+  let source;
+  let buffer;
+  let heard = false;
 
-function show(title, detail, action = '') {
-  statusLabel.textContent = title;
-  detailLabel.textContent = detail;
-  retry.textContent = action;
-  retry.hidden = !action;
-}
-
-function stopTracking(current) {
-  const attempt = current.tracking;
-  if (!attempt) return;
-  current.tracking = null;
-  attempt.cancel.abort();
-  clearInterval(attempt.watchdog);
-  if (attempt.controller) {
-    attempt.controller.dispose();
-    attempt.controller.worker.terminate();
+  async function unlock() {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) {
+      sceneAudio.loop = true;
+      sceneAudio.volume = 0.001;
+      await sceneAudio.play().catch(() => {});
+      return;
+    }
+    if (!ctx) ctx = new AudioContext();
+    if (ctx.state === 'suspended') await ctx.resume();
+    if (!buffer) {
+      const response = await fetch(sceneAudio.currentSrc || sceneAudio.src);
+      buffer = await ctx.decodeAudioData(await response.arrayBuffer());
+    }
+    if (!gain) {
+      gain = ctx.createGain();
+      gain.gain.value = 0.0001;
+      gain.connect(ctx.destination);
+    }
+    if (!source) {
+      source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      source.connect(gain);
+      source.start(0);
+    }
+    setHeard(heard);
   }
-  setEffects?.(false);
-}
 
-function releaseCamera() {
-  if (!session) return;
-  const current = session;
-  session = null;
-  stopTracking(current);
-  current.stream?.getTracks().forEach(track => track.stop());
-  video.pause();
-  video.srcObject = null;
-}
-
-function closeCamera() {
-  releaseCamera();
-  stage.hidden = true;
-  intro.hidden = false;
-  start.focus({preventScroll: true});
-}
-
-function cameraError(error) {
-  switch (error.name) {
-    case 'NotAllowedError':
-    case 'SecurityError':
-      return 'Разрешите камеру для этого сайта в настройках браузера. Если ссылка открыта внутри другого приложения, откройте её в Safari или Chrome.';
-    case 'NotFoundError':
-    case 'OverconstrainedError':
-      return 'Браузер не нашёл доступную камеру. Проверьте, что камера включена в настройках устройства.';
-    case 'NotReadableError':
-    case 'AbortError':
-      return 'Не удалось получить изображение с камеры. Закройте приложения, использующие камеру, и повторите попытку.';
-    default:
-      return error.message || 'Не удалось открыть камеру. Повторите попытку.';
-  }
-}
-
-function timed(promise, ms, message) {
-  let timer;
-  return Promise.race([promise, new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
-  })]).finally(() => clearTimeout(timer));
-}
-
-async function loadEngine() {
-  const path = 'mind-ar@1.2.5/dist/mindar-image.prod.js';
-  for (const host of ['https://cdn.jsdelivr.net/npm/', 'https://unpkg.com/']) {
-    try {
-      return await timed(import(host + path), 25000, 'Превышено время загрузки MindAR.');
-    } catch (error) {
-      console.warn('MindAR', host, error);
+  function setHeard(next) {
+    heard = next;
+    if (gain && ctx) {
+      const now = ctx.currentTime;
+      gain.gain.cancelScheduledValues(now);
+      gain.gain.setTargetAtTime(next ? 0.85 : 0.0001, now, 0.04);
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      return;
+    }
+    sceneAudio.volume = next ? 1 : 0.001;
+    if (next) sceneAudio.play().catch(() => {});
+    else {
+      sceneAudio.pause();
+      sceneAudio.currentTime = 0;
     }
   }
-  throw new Error('Не удалось загрузить модуль распознавания. Проверьте подключение к интернету.');
+
+  function stop() {
+    heard = false;
+    if (source) {
+      try { source.stop(); } catch (error) { /* already stopped */ }
+      source.disconnect();
+      source = null;
+    }
+    if (gain && ctx) {
+      gain.gain.cancelScheduledValues(ctx.currentTime);
+      gain.gain.value = 0.0001;
+    }
+    if (ctx && ctx.state !== 'closed') ctx.suspend().catch(() => {});
+    sceneAudio.pause();
+    sceneAudio.currentTime = 0;
+    sceneAudio.volume = 0.001;
+  }
+
+  return {unlock, setHeard, stop};
+})();
+let session;
+
+function closeCamera(message = '') {
+  if (session) {
+    const current = session;
+    session = null;
+    clearTimeout(current.timer);
+    clearTimeout(current.scriptWait);
+    current.targetRequest?.abort();
+    current.setVisible?.(false);
+    current.setTreeVisible?.(false);
+    AudioCtl.stop();
+    if (current.ready) {
+      try { current.system.stop(); }
+      catch (error) { console.warn('MindAR stop', error); }
+    }
+    // Closing the frame also cancels a pending permission request or MindAR startup.
+    current.preview?.getTracks().forEach(track => track.stop());
+    for (const video of current.frame.contentDocument?.querySelectorAll('video') || []) {
+      video.srcObject?.getTracks().forEach(track => track.stop());
+    }
+    const sceneWindow = current.frame.contentWindow;
+    if (current.onStartupRejection) {
+      sceneWindow?.removeEventListener('unhandledrejection', current.onStartupRejection);
+    }
+    // The blob URL belongs to the scene frame. Revoke it before that document is discarded.
+    if (current.targetURL && sceneWindow) sceneWindow.URL.revokeObjectURL(current.targetURL);
+    current.frame.remove();
+  }
+  hud.hidden = true;
+  intro.hidden = false;
+  introError.textContent = message;
+  startButton.focus({preventScroll: true});
 }
 
-async function loadTarget(Compiler, signal) {
-  const source = new URL('./targets.mind?v=3', location.href);
+async function loadCoverTarget(current, system) {
+  const frame = current.frame.contentWindow;
+  const source = new URL(system.imageTargetSrc, current.frame.contentDocument.baseURI);
+  // The file next to the page is the one this build was published with. GitHub is only a
+  // fallback: raw.githubusercontent.com often stalls on a phone, and each attempt waits 20s.
   const sources = [{url: source.href}];
   const project = /^\/NyxAlloy\/NovgorodAR\/([^/]+)\/targets\.mind$/i.exec(source.pathname);
   if (project && ['raw.githack.com', 'rawcdn.githack.com'].includes(source.hostname)) {
-    sources.unshift(
-      {url: 'https://raw.githubusercontent.com' + source.pathname + source.search},
-      {url: 'https://api.github.com/repos/NyxAlloy/NovgorodAR/contents/targets.mind?ref=' + project[1], headers: {Accept: 'application/vnd.github.raw+json'}}
+    sources.push(
+      {url: 'https://raw.githubusercontent.com' + source.pathname},
+      {
+        url: 'https://api.github.com/repos/NyxAlloy/NovgorodAR/contents/targets.mind?ref=' + project[1],
+        headers: {Accept: 'application/vnd.github.raw+json'}
+      }
     );
   }
+
   for (const {url, headers} of sources) {
-    if (signal.aborted) throw new DOMException('Отменено', 'AbortError');
     const request = new AbortController();
-    const cancel = () => request.abort();
-    signal.addEventListener('abort', cancel, {once: true});
-    const timer = setTimeout(cancel, 15000);
+    current.targetRequest = request;
+    const timeout = setTimeout(() => request.abort(), 20000);
     try {
-      const response = await fetch(url, {signal: request.signal, headers});
+      const response = await fetch(url, {headers, signal: request.signal});
       if (!response.ok) throw new Error('HTTP ' + response.status);
       const bytes = await response.arrayBuffer();
-      const data = new Compiler().importData(bytes);
-      if (data[0]?.matchingData?.length && data[0]?.trackingData?.length) return bytes;
+      if (session !== current) return false;
+      // Decode with the same MindAR reader that will start tracking this cover.
+      const targets = new frame.MINDAR.IMAGE.Compiler().importData(bytes);
+      if (targets.length < 2 || targets.some(item => !item.matchingData?.length || !item.trackingData?.length)) {
+        throw new Error('Файл не содержит данных обоих рисунков');
+      }
+      const blob = new frame.Blob([bytes], {type: 'application/octet-stream'});
+      current.targetURL = frame.URL.createObjectURL(blob);
+      system.imageTargetSrc = current.targetURL;
+      return true;
     } catch (error) {
-      console.warn('Данные обложки', error);
+      if (session !== current) return false;
+      console.warn('Загрузка данных обложки', url, error);
     } finally {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', cancel);
+      clearTimeout(timeout);
+      current.targetRequest = null;
     }
   }
-  throw new Error('Не удалось загрузить данные обложки. Проверьте интернет и повторите распознавание.');
+  closeCamera('Не удалось скачать данные обложки. Проверьте подключение к интернету и нажмите «Включить камеру» ещё раз.');
+  return false;
 }
 
-// MindAR measures marker coordinates from the bottom left. The canvas starts
-// at the top left. Apply the same centred crop as the camera's object-fit:cover.
-function placeOverlay(tracking, worldMatrix) {
-  const width = stage.clientWidth;
-  const height = stage.clientHeight;
-  const fit = Math.max(width / video.videoWidth, height / video.videoHeight);
-  const viewport = new DOMMatrix().translate(width / 2, height / 2)
-    .scale(video.videoWidth * fit / 2, -video.videoHeight * fit / 2, 1);
-  const matrix = viewport.multiply(tracking.projection)
-    .multiply(new DOMMatrix(worldMatrix)).multiply(tracking.canvasToMarker);
-  // Use a planar projective transform. An independent Z axis keeps the CSS
-  // matrix invertible so browsers paint the canvas at every valid pose.
-  matrix.m13 = matrix.m23 = matrix.m43 = 0;
-  matrix.m31 = matrix.m32 = matrix.m34 = 0;
-  matrix.m33 = 1;
-  canvas.style.transform = matrix.toString();
+function stopStream(stream) {
+  const tracks = stream?.getTracks() || [];
+  const ended = tracks.map(track => track.readyState === 'ended'
+    ? Promise.resolve()
+    : new Promise(resolve => track.addEventListener('ended', resolve, {once: true})));
+  tracks.forEach(track => track.stop());
+  return Promise.race([
+    Promise.all(ended),
+    new Promise(resolve => setTimeout(resolve, 800))
+  ]);
 }
 
-async function startTracking(current) {
-  stopTracking(current);
-  const attempt = {cancel: new AbortController()};
-  current.tracking = attempt;
-  const active = () => session === current && current.tracking === attempt;
-  const fail = message => {
-    if (!active()) return;
-    stopTracking(current);
-    show('Камера включена', message, 'Повторить распознавание');
+function allowCameraRetry(win) {
+  const devices = win.navigator.mediaDevices;
+  if (!devices?.getUserMedia || devices.__cameraRetry) return;
+  const native = devices.getUserMedia.bind(devices);
+  devices.__cameraRetry = true;
+  devices.getUserMedia = async function(constraints) {
+    let error;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        return await native(constraints);
+      } catch (failure) {
+        error = failure;
+        const busy = failure?.name === 'NotReadableError' || failure?.name === 'TrackStartError' || failure?.name === 'AbortError';
+        if (!busy) throw failure;
+        await new Promise(resolve => setTimeout(resolve, 400 * (attempt + 1)));
+      }
+    }
+    throw error;
   };
-  show('Камера включена', 'Загружаем распознавание обложки…');
-  try {
-    if (!engine) engine = loadEngine().catch(error => { engine = null; throw error; });
-    const {Controller, Compiler} = await engine;
-    if (!active()) return;
-    const bytes = current.target || await loadTarget(Compiler, attempt.cancel.signal);
-    if (!active()) return;
-    current.target = bytes;
-    setEffects ||= createEffects(canvas);
-    video.width = video.videoWidth;
-    video.height = video.videoHeight;
-    const controller = new Controller({
-      inputWidth: video.width, inputHeight: video.height, maxTrack: 1,
-      warmupTolerance: 3, missTolerance: 2,
-      onUpdate(data) {
-        if (!active()) return;
-        attempt.lastFrame = performance.now();
-        if (data.type !== 'updateMatrix' || data.targetIndex !== 0) return;
-        const found = Boolean(data.worldMatrix);
-        if (found) placeOverlay(attempt, data.worldMatrix);
-        setEffects(found);
-        if (found === attempt.found) return;
-        attempt.found = found;
-        show(found ? 'Обложка обнаружена ✓' : 'Ищем обложку…',
-          found ? 'Держите обложку в кадре.' : 'Наведите камеру на весь лист.');
-      }
-    });
-    attempt.controller = controller;
-    controller.worker.addEventListener('error', () => fail('Распознавание прервалось. Запустите его ещё раз.'));
-    const {dimensions} = controller.addImageTargetsFromBuffer(bytes);
-    const [w, h] = dimensions[0];
-    attempt.projection = new DOMMatrix(controller.getProjectionMatrix());
-    attempt.canvasToMarker = new DOMMatrix().translate(0, h).scale(w / canvas.width, -h / canvas.height, 1);
-    await controller.dummyRun(video);
-    if (!active()) return;
-    attempt.lastFrame = performance.now();
-    attempt.watchdog = setInterval(() => {
-      if (document.hidden || video.paused || video.srcObject?.getVideoTracks()[0]?.muted) {
-        attempt.lastFrame = performance.now();
-      } else if (performance.now() - attempt.lastFrame > 30000) {
-        fail('Обработка изображения остановилась. Запустите распознавание ещё раз.');
-      }
-    }, 5000);
-    show('Ищем обложку…', 'Наведите камеру на весь лист.');
-    controller.processVideo(video);
-  } catch (error) {
-    console.warn('Распознавание', error);
-    fail(/загрузить|интернет/i.test(error.message) ? error.message :
-      'Браузер не смог запустить обработку изображения. Повторите попытку или откройте страницу в Safari или Chrome.');
-  }
 }
 
-async function openCamera() {
-  releaseCamera();
-  const current = {};
-  session = current;
-  intro.hidden = true;
-  stage.hidden = false;
-  show('Включаем камеру…', 'Ожидаем изображение.');
-  stop.focus({preventScroll: true});
-  try {
-    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
-      throw new Error('Откройте HTTPS-ссылку в Safari на iPhone или Chrome на Android.');
-    }
-    // Request directly during the button click, before loading any AR code.
-    const request = navigator.mediaDevices.getUserMedia({
-      audio: false, video: {facingMode: {ideal: 'environment'}, width: {ideal: 640}, height: {ideal: 480}}
-    });
-    // The browser owns the permission dialog. Show help only if it is waiting
-    // for a decision, and never delay capture to query a permission.
-    if (navigator.permissions) {
-      navigator.permissions.query({name: 'camera'}).then(permission => {
-        if (session === current && !current.stream && permission.state === 'prompt') {
-          detailLabel.textContent = 'Если браузер попросит доступ, нажмите «Разрешить».';
-        }
-      }).catch(() => {});
-    }
-    const stream = await request;
-    if (session !== current) {
-      stream.getTracks().forEach(track => track.stop());
+function connectScene(current) {
+  if (session !== current || current.connected) return;
+  const {frame} = current;
+  const win = frame.contentWindow;
+  const doc = frame.contentDocument;
+  // The first load is often about:blank, or the new address is already set while the
+  // scene document and its scripts are not ready. Closing here cancelled the real load.
+  if (!win || !doc) return;
+  let href = '';
+  try { href = win.location.href; } catch (error) { return; }
+  if (!href || href === 'about:blank') return;
+  const scene = doc.getElementById('arScene');
+  if (!scene) return;
+  if (!win.AFRAME) {
+    if (win.__scriptError) {
+      closeCamera('Не удалось загрузить библиотеку сцены (' + win.__scriptError + '). Обновите страницу и повторите запуск.');
       return;
     }
-    current.stream = stream;
-    const track = stream.getVideoTracks()[0];
-    const ended = () => {
-      if (session !== current) return;
-      releaseCamera();
-      show('Камера остановлена', 'Видеопоток прервался. Включите камеру снова.', 'Включить камеру');
-    };
-    track.addEventListener('ended', ended, {once: true});
-    if (track.readyState === 'ended') { ended(); return; }
-    video.muted = true;
-    video.srcObject = stream;
-    show('Включаем камеру…', 'Ждём первый кадр.');
-    await timed(video.play(), 20000, 'Камера не показала первый кадр. Повторите попытку.');
-    if (session === current) await startTracking(current);
-  } catch (error) {
-    if (session !== current) return;
-    releaseCamera();
-    show('Камера недоступна', cameraError(error), 'Повторить запрос камеры');
+    current.scriptTries = (current.scriptTries || 0) + 1;
+    if (current.scriptTries < 8) {
+      clearTimeout(current.scriptWait);
+      current.scriptWait = setTimeout(() => connectScene(current), 500);
+      return;
+    }
+    closeCamera('Не удалось загрузить сцену A-Frame. Обновите страницу и повторите запуск.');
+    return;
   }
+  clearTimeout(current.scriptWait);
+  current.scriptWait = null;
+  current.connected = true;
+
+  async function startTracking() {
+    if (session !== current) return;
+    const system = scene.systems['mindar-image-system'];
+    if (!system) {
+      closeCamera('Не удалось загрузить MindAR. Проверьте интернет и повторите запуск.');
+      return;
+    }
+    try {
+      current.system = system;
+      statusEl.textContent = 'Загружаем данные рисунков…';
+      if (!await loadCoverTarget(current, system) || session !== current) return;
+      current.setVisible = createEffects(doc);
+      current.setTreeVisible = createTree(doc);
+      current.coverVisible = false;
+      current.poemVisible = false;
+      function showStatus() {
+        if (current.coverVisible && current.poemVisible) statusEl.textContent = 'Оба рисунка в кадре ✓';
+        else if (current.coverVisible) statusEl.textContent = 'Дед Мороз ожил ✓';
+        else if (current.poemVisible) statusEl.textContent = 'Ёлка зажглась ✓';
+        else statusEl.textContent = 'Ищем рисунок…';
+        AudioCtl.setHeard(current.coverVisible || current.poemVisible);
+      }
+      function watch(element, key, show) {
+        element.addEventListener('targetFound', () => {
+          if (session !== current || !current.ready) return;
+          current[key] = true;
+          show(true);
+          showStatus();
+        });
+        element.addEventListener('targetLost', () => {
+          if (session !== current || !current.ready) return;
+          current[key] = false;
+          show(false);
+          showStatus();
+        });
+      }
+      watch(doc.getElementById('coverTarget'), 'coverVisible', current.setVisible);
+      watch(doc.getElementById('poemTarget'), 'poemVisible', current.setTreeVisible);
+      // MindAR starts the video and its async initialization after start() returns.
+      const onStartupRejection = (event) => {
+        if (session !== current) return;
+        const reason = event.reason;
+        const detail = (reason instanceof Error ? reason.message : typeof reason === 'string' ? reason : '')
+          .replace(/\s+/g, ' ').trim().slice(0, 180);
+        event.preventDefault();
+        closeCamera(detail
+          ? 'Не удалось подготовить распознавание. ' + detail
+          : 'Не удалось подготовить распознавание. Проверьте файл targets.mind и поддержку WebGL в браузере.');
+      };
+      current.onStartupRejection = onStartupRejection;
+      frame.contentWindow.addEventListener('unhandledrejection', onStartupRejection);
+      scene.addEventListener('arReady', () => {
+        if (session !== current) return;
+        clearTimeout(current.timer);
+        frame.contentWindow.removeEventListener('unhandledrejection', onStartupRejection);
+        current.ready = true;
+        statusEl.textContent = 'Ищем рисунок…';
+        const cameraTrack = system.video?.srcObject?.getVideoTracks()[0];
+        const onCameraEnded = () => {
+          if (session === current) closeCamera('Видеопоток прервался. Включите камеру ещё раз.');
+        };
+        if (cameraTrack?.readyState === 'ended') onCameraEnded();
+        else cameraTrack?.addEventListener('ended', onCameraEnded, {once: true});
+      }, {once: true});
+      scene.addEventListener('arError', () => {
+        if (session === current) closeCamera('Камера недоступна. Проверьте разрешение браузера и закройте приложения, которые используют камеру.');
+      });
+      statusEl.textContent = 'Разрешите доступ к камере…';
+      await stopStream(current.preview);
+      current.preview = null;
+      if (session !== current) return;
+      allowCameraRetry(frame.contentWindow);
+      system.start();
+    } catch (error) {
+      console.error('MindAR', error);
+      if (session === current) closeCamera('Не удалось запустить распознавание. Проверьте доступ к камере и повторите запуск.');
+    }
+  }
+  if (scene.hasLoaded) startTracking();
+  else scene.addEventListener('loaded', startTracking, {once: true});
 }
 
-if (stage) {
-  start.addEventListener('click', openCamera);
-  stop.addEventListener('click', closeCamera);
-  retry.addEventListener('click', () => {
-    if (session?.stream) startTracking(session);
-    else openCamera();
-  });
-  video.addEventListener('resize', () => {
-    const controller = session?.tracking?.controller;
-    if (controller && video.videoWidth && video.videoHeight &&
-        (video.videoWidth !== controller.inputWidth || video.videoHeight !== controller.inputHeight)) startTracking(session);
-  });
-  window.addEventListener('pagehide', closeCamera);
-} else if (start) {
-  // A cached copy of the former landing page can still load this script.
-  start.addEventListener('click', () => location.assign('./camera.html'));
+let opening = false;
+
+async function openCamera() {
+  if (session || opening) return;
+  if (!window.isSecureContext || location.protocol === 'file:') {
+    closeCamera('Откройте сайт по HTTPS или через локальный сервер на localhost.');
+    return;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    closeCamera('Этот браузер не предоставляет доступ к камере. Откройте страницу в Safari или Chrome.');
+    return;
+  }
+  opening = true;
+  startButton.disabled = true;
+  const unlockAudio = AudioCtl.unlock().catch((error) => console.warn('Звук', error));
+  let preview;
+  try {
+    // The prompt must come from this click. MindAR asks again later, inside the scene.
+    preview = await navigator.mediaDevices.getUserMedia({
+      video: {facingMode: {ideal: 'environment'}},
+      audio: false
+    });
+    await unlockAudio;
+  } catch (error) {
+    opening = false;
+    startButton.disabled = false;
+    AudioCtl.stop();
+    const denied = error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError';
+    closeCamera(denied
+      ? 'Камера недоступна. Разрешите доступ к камере в браузере и нажмите «Включить камеру» ещё раз.'
+      : 'Камера недоступна. Проверьте разрешение браузера и закройте приложения, которые используют камеру.');
+    return;
+  }
+  const frame = document.createElement('iframe');
+  frame.className = 'camera-frame';
+  frame.title = 'Камера для распознавания обложки';
+  frame.allow = 'camera';
+  const current = {frame, preview, ready: false, connected: false};
+  session = current;
+  opening = false;
+  startButton.disabled = false;
+  introError.textContent = '';
+  intro.hidden = true;
+  hud.hidden = false;
+  statusEl.textContent = 'Загружаем сцену…';
+  stopButton.focus({preventScroll: true});
+  current.timer = setTimeout(() => {
+    if (session === current) closeCamera('Запуск занял слишком много времени. Проверьте доступ к камере и повторите попытку.');
+  }, 90000);
+  frame.addEventListener('load', () => connectScene(current));
+  document.body.append(frame);
+  frame.src = './scene.html?v=11';
 }
+
+startButton.addEventListener('click', openCamera);
+stopButton.addEventListener('click', () => closeCamera());
+window.addEventListener('pagehide', () => { if (session) closeCamera(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && session?.ready) closeCamera();
+});
