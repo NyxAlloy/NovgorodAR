@@ -257,62 +257,79 @@ function createTree(sceneDocument) {
   let visible = false;
   let frame = 0;
   let lastDraw = -Infinity;
+  let shownAt = 0;
 
-  const bulbs = [
-    [0.50, 0.22], [0.42, 0.34], [0.58, 0.36], [0.36, 0.48],
-    [0.50, 0.46], [0.64, 0.50], [0.32, 0.62], [0.46, 0.60],
-    [0.60, 0.64], [0.70, 0.62], [0.40, 0.74], [0.56, 0.76],
+  const title = 'Ёлка';
+  const lines = [
+    'В окне огни, и снег идёт.',
+    'На ёлке искра — тёплый мёд.',
+    'Зажги огонь — и в тот же миг',
+    'весь двор от счастья станет жив.',
   ];
-  const colors = ['#ffe08a', '#ff5a62', '#7fd0ff', '#fff6d8'];
+  const bulbs = [
+    [0.50, 0.16], [0.42, 0.24], [0.58, 0.25], [0.36, 0.34],
+    [0.50, 0.33], [0.64, 0.35], [0.30, 0.44], [0.45, 0.43],
+    [0.58, 0.45], [0.70, 0.43], [0.38, 0.52], [0.55, 0.53],
+  ];
+  const colors = ['#ffe08a', '#ff5a62', '#7fd0ff', '#fff6d8', '#ffb347'];
+  const flakes = Array.from({length: 28}, () => ({
+    x: 0.12 + Math.random() * 0.76,
+    y: Math.random(),
+    r: 1 + Math.random() * 2.4,
+    speed: 0.03 + Math.random() * 0.05,
+    phase: Math.random() * 6.283,
+  }));
 
-  function drawTree(ms) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const t = ms / 1000;
+  function drawLitTree(t, appear) {
+    const grow = reduceMotion ? 1 : Math.min(1, appear / 0.9);
     const cx = canvas.width * 0.5;
-    const top = canvas.height * 0.14;
-    ctx.fillStyle = 'rgba(255, 248, 210, 0.45)';
-    ctx.beginPath();
-    ctx.arc(cx, canvas.height * 0.48, canvas.width * 0.42, 0, Math.PI * 2);
-    ctx.fill();
+    const top = canvas.height * 0.07;
+    ctx.save();
+    ctx.translate(cx, top + canvas.height * 0.28);
+    ctx.scale(grow, grow);
+    ctx.translate(-cx, -(top + canvas.height * 0.28));
+
     ctx.fillStyle = '#f6e7a2';
     ctx.beginPath();
     for (let i = 0; i < 5; i++) {
       const a = -Math.PI / 2 + (i * Math.PI * 2) / 5;
       const b = a + Math.PI / 5;
-      ctx.lineTo(cx + Math.cos(a) * 18, top - 10 + Math.sin(a) * 18);
-      ctx.lineTo(cx + Math.cos(b) * 8, top - 10 + Math.sin(b) * 8);
+      ctx.lineTo(cx + Math.cos(a) * 16, top + Math.sin(a) * 16);
+      ctx.lineTo(cx + Math.cos(b) * 7, top + Math.sin(b) * 7);
     }
     ctx.closePath();
     ctx.fill();
+
     for (let tier = 0; tier < 4; tier++) {
-      const y = top + tier * canvas.height * 0.15;
-      const half = 52 + tier * 38;
-      const gradient = ctx.createLinearGradient(cx, y, cx, y + canvas.height * 0.22);
-      gradient.addColorStop(0, '#2f9a52');
+      const y = top + 18 + tier * canvas.height * 0.095;
+      const half = 48 + tier * 34;
+      const gradient = ctx.createLinearGradient(cx, y, cx, y + canvas.height * 0.16);
+      gradient.addColorStop(0, '#34a85a');
       gradient.addColorStop(1, '#14532d');
       ctx.fillStyle = gradient;
       ctx.beginPath();
       ctx.moveTo(cx, y);
-      ctx.lineTo(cx + half, y + canvas.height * 0.2);
-      ctx.lineTo(cx - half, y + canvas.height * 0.2);
+      ctx.lineTo(cx + half, y + canvas.height * 0.145);
+      ctx.lineTo(cx - half, y + canvas.height * 0.145);
       ctx.closePath();
       ctx.fill();
     }
     ctx.fillStyle = '#6b3a22';
-    ctx.fillRect(cx - 16, canvas.height * 0.8, 32, canvas.height * 0.1);
+    ctx.fillRect(cx - 14, canvas.height * 0.52, 28, canvas.height * 0.07);
+
     for (let i = 0; i < bulbs.length; i++) {
       const [xNorm, yNorm] = bulbs[i];
       const x = xNorm * canvas.width;
       const y = yNorm * canvas.height;
-      const glow = reduceMotion ? 0.95 : 0.45 + 0.55 * (0.5 + 0.5 * Math.sin(t * 3.8 + i));
-      const radius = 12;
-      const halo = ctx.createRadialGradient(x, y, 0, x, y, radius * 2.6);
+      const glow = reduceMotion ? 1 : 0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * 4 + i));
+      const radius = 11;
+      const halo = ctx.createRadialGradient(x, y, 0, x, y, radius * 2.8);
       halo.addColorStop(0, colors[i % colors.length]);
       halo.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.globalAlpha = glow;
       ctx.fillStyle = halo;
       ctx.beginPath();
-      ctx.arc(x, y, radius * 2.6, 0, Math.PI * 2);
+      ctx.arc(x, y, radius * 2.8, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = colors[i % colors.length];
       ctx.beginPath();
@@ -320,12 +337,92 @@ function createTree(sceneDocument) {
       ctx.fill();
       ctx.globalAlpha = 1;
     }
+    ctx.restore();
+  }
+
+  function drawAnimatedText(t, appear) {
+    // Cover the printed title + verse so the living text is readable.
+    ctx.fillStyle = 'rgba(250, 244, 232, 0.92)';
+    ctx.fillRect(canvas.width * 0.08, canvas.height * 0.58, canvas.width * 0.84, canvas.height * 0.3);
+
+    const titleProgress = reduceMotion ? 1 : Math.min(1, Math.max(0, (appear - 0.15) / 0.45));
+    if (titleProgress > 0) {
+      const titleY = canvas.height * 0.64 + (reduceMotion ? 0 : (1 - titleProgress) * 18);
+      const pulse = reduceMotion ? 1 : 0.7 + 0.3 * (0.5 + 0.5 * Math.sin(t * 3));
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 42px Georgia, "Times New Roman", serif';
+      ctx.fillStyle = `rgba(180, 30, 35, ${titleProgress})`;
+      ctx.shadowColor = `rgba(255, 200, 90, ${0.65 * pulse * titleProgress})`;
+      ctx.shadowBlur = 18 * pulse;
+      ctx.fillText(title, canvas.width * 0.5, titleY);
+      ctx.shadowBlur = 0;
+
+      // Underline spark under the title.
+      const underline = ctx.createLinearGradient(canvas.width * 0.3, 0, canvas.width * 0.7, 0);
+      underline.addColorStop(0, 'rgba(255,200,90,0)');
+      underline.addColorStop(0.5, `rgba(255,200,90,${0.8 * titleProgress})`);
+      underline.addColorStop(1, 'rgba(255,200,90,0)');
+      ctx.strokeStyle = underline;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(canvas.width * 0.32, titleY + 22);
+      ctx.lineTo(canvas.width * 0.68, titleY + 22);
+      ctx.stroke();
+    }
+
+    ctx.font = '22px Georgia, "Times New Roman", serif';
+    for (let i = 0; i < lines.length; i++) {
+      const lineAppear = reduceMotion ? 1 : Math.min(1, Math.max(0, (appear - 0.45 - i * 0.28) / 0.4));
+      if (lineAppear <= 0) continue;
+      const y = canvas.height * (0.70 + i * 0.045) + (reduceMotion ? 0 : (1 - lineAppear) * 14);
+      const wave = reduceMotion ? 0 : Math.sin(t * 2.4 + i) * 2;
+      const glow = reduceMotion ? 0.9 : 0.55 + 0.45 * (0.5 + 0.5 * Math.sin(t * 3.2 + i));
+      ctx.fillStyle = `rgba(40, 28, 24, ${lineAppear})`;
+      ctx.shadowColor = `rgba(255, 210, 110, ${0.55 * glow * lineAppear})`;
+      ctx.shadowBlur = 12 * glow;
+      ctx.fillText(lines[i], canvas.width * 0.5 + wave, y);
+      ctx.shadowBlur = 0;
+
+      // Tiny sparkles that travel along the line.
+      if (!reduceMotion && lineAppear > 0.7) {
+        const sparkX = canvas.width * (0.22 + ((t * 0.15 + i * 0.2) % 0.56));
+        ctx.fillStyle = `rgba(255, 236, 150, ${0.7 + 0.3 * Math.sin(t * 8 + i)})`;
+        ctx.beginPath();
+        ctx.arc(sparkX, y - 10, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  function drawPoem(ms) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const t = ms / 1000;
+    const appear = reduceMotion ? 3 : (ms - shownAt) / 1000;
+
+    // Soft veil over the printed tree so the lit one reads clearly.
+    ctx.fillStyle = 'rgba(250, 244, 232, 0.55)';
+    ctx.fillRect(canvas.width * 0.12, canvas.height * 0.05, canvas.width * 0.76, canvas.height * 0.52);
+
+    drawLitTree(t, appear);
+    drawAnimatedText(t, appear);
+
+    if (!reduceMotion) {
+      for (const flake of flakes) {
+        const y = ((flake.y + t * flake.speed) % 1) * canvas.height * 0.55;
+        const x = flake.x * canvas.width + Math.sin(t + flake.phase) * 6;
+        ctx.fillStyle = 'rgba(255,252,248,0.85)';
+        ctx.beginPath();
+        ctx.arc(x, y, flake.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
 
   function animate(time) {
     if (!visible) return;
-    if (time - lastDraw >= 60) {
-      drawTree(time);
+    if (time - lastDraw >= 50) {
+      drawPoem(time);
       touchCanvasTexture(layer, canvas, sceneWindow);
       lastDraw = time;
       if (reduceMotion) return;
@@ -338,8 +435,9 @@ function createTree(sceneDocument) {
     visible = next;
     layer.setAttribute('visible', next);
     if (visible) {
+      shownAt = performance.now();
       lastDraw = -Infinity;
-      drawTree(performance.now());
+      drawPoem(shownAt);
       touchCanvasTexture(layer, canvas, sceneWindow);
       animate(performance.now());
     } else {
