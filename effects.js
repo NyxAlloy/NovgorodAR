@@ -1,9 +1,7 @@
 'use strict';
 
-function createEffects(sceneDocument) {
-  const canvas = sceneDocument.getElementById('effectsCanvas');
+function createEffects(canvas) {
   const ctx = canvas.getContext('2d');
-  const layer = sceneDocument.getElementById('snowLayer');
   let visible = false;
   let frame = 0;
   let lastDraw = -Infinity;
@@ -52,8 +50,6 @@ function createEffects(sceneDocument) {
     if (!visible) return;
     if (time - lastDraw >= 60) {
       drawEffects(time);
-      const texture = layer.getObject3D('mesh')?.material?.map;
-      if (texture) texture.needsUpdate = true;
       lastDraw = time;
     }
     frame = requestAnimationFrame(animate);
@@ -62,7 +58,7 @@ function createEffects(sceneDocument) {
   return function setVisible(next) {
     if (visible === next) return;
     visible = next;
-    layer.setAttribute('visible', next);
+    canvas.hidden = !next;
     if (visible) {
       lastDraw = -Infinity;
       animate(performance.now());
