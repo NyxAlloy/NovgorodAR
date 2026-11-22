@@ -209,8 +209,8 @@ function connectScene(current) {
       current.poemVisible = false;
       function showStatus() {
         if (current.coverVisible && current.poemVisible) statusEl.textContent = 'Оба рисунка в кадре ✓';
-        else if (current.coverVisible) statusEl.textContent = 'Дед Мороз ожил ✓';
-        else if (current.poemVisible) statusEl.textContent = 'Текст ожил, ёлка горит ✓';
+        else if (current.coverVisible) statusEl.textContent = 'Обложка в кадре ✓';
+        else if (current.poemVisible) statusEl.textContent = 'Ёлка со стиха зажглась ✓';
         else statusEl.textContent = 'Ищем рисунок…';
         AudioCtl.setHeard(current.coverVisible || current.poemVisible);
       }
@@ -325,7 +325,7 @@ async function openCamera() {
   }, 90000);
   frame.addEventListener('load', () => connectScene(current));
   document.body.append(frame);
-  frame.src = './scene.html?v=13';
+  frame.src = './scene.html?v=15';
 }
 
 startButton.addEventListener('click', openCamera);
