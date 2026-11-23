@@ -8,7 +8,7 @@ function createEffects(canvas) {
 
   const flakes = Array.from({length: 68}, () => ({
     x: Math.random() * canvas.width,
-    y: 138 + Math.random() * 462,
+    y: Math.random() * canvas.height,
     radius: 0.65 + Math.random() * 2.1,
     speed: 10 + Math.random() * 32,
     phase: Math.random() * 6.283,
@@ -16,8 +16,8 @@ function createEffects(canvas) {
 
   // The art occupies most of the front page. Twinkles sit around the trees.
   const lights = [
-    [0.84, 0.27, 15], [0.90, 0.35, 12], [0.95, 0.42, 17],
-    [0.79, 0.40, 9], [0.94, 0.51, 12], [0.82, 0.54, 10],
+    [0.886, 0.111, 14], [0.930, 0.205, 10], [0.980, 0.257, 8],
+    [0.943, 0.356, 18], [0.843, 0.188, 7], [0.929, 0.002, 6],
   ];
 
   function drawEffects(ms) {
@@ -27,7 +27,7 @@ function createEffects(canvas) {
     for (const flake of flakes) {
       const drift = Math.sin(t * 0.8 + flake.phase) * 5;
       const x = flake.x + drift;
-      const y = 140 + ((flake.y - 140 + t * flake.speed) % 461);
+      const y = (flake.y + t * flake.speed) % canvas.height;
       ctx.fillStyle = 'rgba(255,250,244,0.72)';
       ctx.beginPath();
       ctx.arc(x, y, flake.radius, 0, Math.PI * 2);

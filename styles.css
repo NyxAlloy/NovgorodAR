@@ -21,3 +21,9 @@ button{font:inherit;font-weight:750;border-radius:14px;border:0;cursor:pointer}
 .hint p{margin:0;font-size:14px;color:#fff}
 .hint button{margin-top:10px}
 .status span:first-child{font-weight:750;border-right:1px solid #ffffff60;padding-right:.55rem;margin-right:.55rem}
+
+.note a{color:#ffdbbe;text-underline-offset:.2em}
+.qr-link{display:inline-block;margin-top:15px;line-height:0}
+.qr-link img{max-width:100%;height:auto}
+.controls{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px;max-width:65vw}
+@media(max-width:440px){.controls .secondary{padding:9px 10px;font-size:13px}}

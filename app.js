@@ -7,6 +7,7 @@ const canvas = document.getElementById('effectsCanvas');
 const start = document.getElementById('startButton');
 const stop = document.getElementById('stopButton');
 const retry = document.getElementById('retryButton');
+const soundButton = document.getElementById('soundButton');
 const statusLabel = document.getElementById('status');
 const detailLabel = document.getElementById('detail');
 let session;
@@ -20,9 +21,79 @@ function show(title, detail, action = '') {
   retry.hidden = !action;
 }
 
+// Resume in the same click as getUserMedia. Decode the chime asynchronously.
+function soundLabel(current, label) {
+  if (session !== current) return;
+  soundButton.textContent = label;
+  soundButton.setAttribute('aria-pressed', String(!!current.audio?.enabled));
+}
+
+function stopChime(current) {
+  const audio = current.audio;
+  if (!audio?.source) return;
+  const source = audio.source;
+  audio.source = null;
+  source.stop();
+  source.disconnect();
+}
+
+function playChime(current) {
+  const audio = current.audio;
+  if (!audio?.enabled || !audio.buffer || audio.context.state !== 'running' ||
+      !current.tracking?.found || current.tracking.sounded || document.hidden) return;
+  const source = audio.context.createBufferSource();
+  source.buffer = audio.buffer;
+  source.connect(audio.context.destination);
+  audio.source = source;
+  current.tracking.sounded = true;
+  source.onended = () => {
+    if (audio.source === source) {
+      audio.source = null;
+      source.disconnect();
+    }
+  };
+  source.start();
+}
+
+function enableSound(current) {
+  let audio = current.audio;
+  try {
+    const AudioEngine = window.AudioContext || window.webkitAudioContext;
+    if (!AudioEngine) {
+      soundLabel(current, 'Звук недоступен');
+      return;
+    }
+    if (!audio) {
+      audio = current.audio = {context: new AudioEngine(), cancel: new AbortController()};
+    }
+    audio.enabled = true;
+    const unlocked = audio.context.resume();
+    if (!audio.loading) {
+      audio.loading = fetch('./assets/chime.wav', {signal: audio.cancel.signal})
+        .then(response => {
+          if (!response.ok) throw Error('HTTP ' + response.status);
+          return response.arrayBuffer();
+        }).then(bytes => audio.context.decodeAudioData(bytes))
+        .then(buffer => { audio.buffer = buffer; })
+        .catch(error => { audio.loading = null; throw error; });
+    }
+    soundLabel(current, 'Выключить звук');
+    Promise.all([unlocked, audio.loading]).then(() => {
+      if (session === current) playChime(current);
+    }).catch(() => {
+      audio.enabled = false;
+      soundLabel(current, 'Включить звук');
+    });
+  } catch {
+    if (audio) audio.enabled = false;
+    soundLabel(current, 'Включить звук');
+  }
+}
+
 function stopTracking(current) {
   const attempt = current.tracking;
   if (!attempt) return;
+  stopChime(current);
   current.tracking = null;
   attempt.cancel.abort();
   clearInterval(attempt.watchdog);
@@ -37,7 +108,12 @@ function releaseCamera() {
   if (!session) return;
   const current = session;
   session = null;
+  soundButton.hidden = true;
   stopTracking(current);
+  if (current.audio) {
+    current.audio.cancel.abort();
+    current.audio.context.close().catch(() => {});
+  }
   current.stream?.getTracks().forEach(track => track.stop());
   video.pause();
   video.srcObject = null;
@@ -86,13 +162,13 @@ async function loadEngine() {
 }
 
 async function loadTarget(Compiler, signal) {
-  const source = new URL('./targets.mind?v=3', location.href);
+  const source = new URL('./assets/winter-portrait.mind', location.href);
   const sources = [{url: source.href}];
-  const project = /^\/NyxAlloy\/NovgorodAR\/([^/]+)\/targets\.mind$/i.exec(source.pathname);
+  const project = /^\/NyxAlloy\/NovgorodAR\/([^/]+)\/assets\/winter-portrait\.mind$/i.exec(source.pathname);
   if (project && ['raw.githack.com', 'rawcdn.githack.com'].includes(source.hostname)) {
     sources.unshift(
       {url: 'https://raw.githubusercontent.com' + source.pathname + source.search},
-      {url: 'https://api.github.com/repos/NyxAlloy/NovgorodAR/contents/targets.mind?ref=' + project[1], headers: {Accept: 'application/vnd.github.raw+json'}}
+      {url: 'https://api.github.com/repos/NyxAlloy/NovgorodAR/contents/assets/winter-portrait.mind?ref=' + project[1], headers: {Accept: 'application/vnd.github.raw+json'}}
     );
   }
   for (const {url, headers} of sources) {
@@ -168,8 +244,11 @@ async function startTracking(current) {
         setEffects(found);
         if (found === attempt.found) return;
         attempt.found = found;
+        attempt.sounded = false;
+        if (found) playChime(current);
+        else stopChime(current);
         show(found ? 'Обложка обнаружена ✓' : 'Ищем обложку…',
-          found ? 'Держите обложку в кадре.' : 'Наведите камеру на весь лист.');
+          found ? 'Держите портрет в кадре.' : 'Наведите камеру на портрет Деда Мороза.');
       }
     });
     attempt.controller = controller;
@@ -188,7 +267,7 @@ async function startTracking(current) {
         fail('Обработка изображения остановилась. Запустите распознавание ещё раз.');
       }
     }, 5000);
-    show('Ищем обложку…', 'Наведите камеру на весь лист.');
+    show('Ищем обложку…', 'Наведите камеру на портрет Деда Мороза.');
     controller.processVideo(video);
   } catch (error) {
     console.warn('Распознавание', error);
@@ -205,6 +284,8 @@ async function openCamera() {
   stage.hidden = false;
   show('Включаем камеру…', 'Ожидаем изображение.');
   stop.focus({preventScroll: true});
+  soundButton.hidden = false;
+  enableSound(current);
   try {
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('Откройте HTTPS-ссылку в Safari на iPhone или Chrome на Android.');
@@ -251,6 +332,21 @@ async function openCamera() {
 if (stage) {
   start.addEventListener('click', openCamera);
   stop.addEventListener('click', closeCamera);
+  soundButton.addEventListener('click', () => {
+    const current = session;
+    if (!current) return;
+    if (current.audio?.enabled && current.audio.context.state === 'running') {
+      current.audio.enabled = false;
+      stopChime(current);
+      soundLabel(current, 'Включить звук');
+    } else {
+      if (current.tracking) current.tracking.sounded = false;
+      enableSound(current);
+    }
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (session && document.hidden) stopChime(session);
+  });
   retry.addEventListener('click', () => {
     if (session?.stream) startTracking(session);
     else openCamera();
@@ -263,5 +359,5 @@ if (stage) {
   window.addEventListener('pagehide', closeCamera);
 } else if (start) {
   // A cached copy of the former landing page can still load this script.
-  start.addEventListener('click', () => location.assign('./camera.html'));
+  start.addEventListener('click', () => location.assign('./ar.html'));
 }
