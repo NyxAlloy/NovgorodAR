@@ -3,7 +3,8 @@
 const intro = document.getElementById('intro');
 const stage = document.getElementById('cameraStage');
 const video = document.getElementById('camera');
-const canvas = document.getElementById('effectsCanvas');
+const plane = document.getElementById('portraitPlane');
+const filmURL = './assets/ded-moroz-b0b59858.mp4';
 const start = document.getElementById('startButton');
 const stop = document.getElementById('stopButton');
 const retry = document.getElementById('retryButton');
@@ -11,7 +12,6 @@ const soundButton = document.getElementById('soundButton');
 const statusLabel = document.getElementById('status');
 const detailLabel = document.getElementById('detail');
 let session;
-let setEffects;
 let engine;
 
 function show(title, detail, action = '') {
@@ -21,11 +21,18 @@ function show(title, detail, action = '') {
   retry.hidden = !action;
 }
 
-// Resume in the same click as getUserMedia. Decode the chime asynchronously.
-function soundLabel(current, label) {
+function onCover(current) {
+  return session === current && !!current.tracking?.found && !document.hidden;
+}
+
+function refreshSound(current) {
   if (session !== current) return;
-  soundButton.textContent = label;
-  soundButton.setAttribute('aria-pressed', String(!!current.audio?.enabled));
+  const enabled = current.soundEnabled;
+  soundButton.textContent = enabled ? 'Выключить звук' : 'Включить звук';
+  soundButton.setAttribute('aria-pressed', String(enabled));
+  const audible = enabled && onCover(current);
+  if (current.audio?.gain) current.audio.gain.gain.value = audible ? 1 : 0;
+  else current.clip.muted = !audible;
 }
 
 function stopChime(current) {
@@ -39,13 +46,14 @@ function stopChime(current) {
 
 function playChime(current) {
   const audio = current.audio;
-  if (!audio?.enabled || !audio.buffer || audio.context.state !== 'running' ||
-      !current.tracking?.found || current.tracking.sounded || document.hidden) return;
+  const tracking = current.tracking;
+  if (!onCover(current) || !current.soundEnabled || !audio?.buffer ||
+      audio.context.state !== 'running' || tracking.sounded || current.clip.paused) return;
   const source = audio.context.createBufferSource();
   source.buffer = audio.buffer;
-  source.connect(audio.context.destination);
+  source.connect(audio.chimeGain);
   audio.source = source;
-  current.tracking.sounded = true;
+  tracking.sounded = true;
   source.onended = () => {
     if (audio.source === source) {
       audio.source = null;
@@ -55,45 +63,118 @@ function playChime(current) {
   source.start();
 }
 
-function enableSound(current) {
-  let audio = current.audio;
-  try {
-    const AudioEngine = window.AudioContext || window.webkitAudioContext;
-    if (!AudioEngine) {
-      soundLabel(current, 'Звук недоступен');
-      return;
+function prepareMedia(current) {
+  const clip = current.clip = document.createElement('video');
+  clip.width = clip.height = 512;
+  clip.playsInline = true;
+  clip.setAttribute('webkit-playsinline', '');
+  clip.disablePictureInPicture = clip.disableRemotePlayback = true;
+  clip.loop = true;
+  clip.preload = 'auto';
+  clip.crossOrigin = 'anonymous';
+  clip.src = filmURL;
+  plane.replaceChildren(clip);
+  current.soundEnabled = true;
+  const AudioEngine = window.AudioContext || window.webkitAudioContext;
+  if (AudioEngine) {
+    try {
+      const context = new AudioEngine();
+      const audio = current.audio = {context, cancel: new AbortController()};
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      gain.connect(context.destination);
+      context.createMediaElementSource(clip).connect(gain);
+      audio.gain = gain;
+      audio.chimeGain = context.createGain();
+      audio.chimeGain.gain.value = 0.45;
+      audio.chimeGain.connect(gain);
+      context.resume().catch(() => {
+        if (session !== current) return;
+        current.soundEnabled = false;
+        refreshSound(current);
+      });
+      fetch('./assets/chime.wav', {signal: audio.cancel.signal})
+        .then(r => { if (!r.ok) throw Error(r.status); return r.arrayBuffer(); })
+        .then(bytes => context.decodeAudioData(bytes))
+        .then(buffer => { audio.buffer = buffer; playChime(current); })
+        .catch(() => {}); // The film has its own soundtrack.
+    } catch (error) {
+      console.warn('Звук обложки', error);
     }
-    if (!audio) {
-      audio = current.audio = {context: new AudioEngine(), cancel: new AbortController()};
-    }
-    audio.enabled = true;
-    const unlocked = audio.context.resume();
-    if (!audio.loading) {
-      audio.loading = fetch('./assets/chime.wav', {signal: audio.cancel.signal})
-        .then(response => {
-          if (!response.ok) throw Error('HTTP ' + response.status);
-          return response.arrayBuffer();
-        }).then(bytes => audio.context.decodeAudioData(bytes))
-        .then(buffer => { audio.buffer = buffer; })
-        .catch(error => { audio.loading = null; throw error; });
-    }
-    soundLabel(current, 'Выключить звук');
-    Promise.all([unlocked, audio.loading]).then(() => {
-      if (session === current) playChime(current);
-    }).catch(() => {
-      audio.enabled = false;
-      soundLabel(current, 'Включить звук');
-    });
-  } catch {
-    if (audio) audio.enabled = false;
-    soundLabel(current, 'Включить звук');
   }
+  refreshSound(current);
+  clip.addEventListener('playing', () => {
+    if (!onCover(current)) return;
+    plane.classList.add('playing');
+    playChime(current);
+  });
+  clip.addEventListener('error', () => {
+    if (onCover(current)) filmError(current);
+  });
+  // Start on the user's tap. The closed audio gate keeps preparation silent.
+  clip.play().then(() => {
+    if (session === current && !onCover(current)) {
+      clip.pause();
+      clip.currentTime = 0;
+    }
+  }).catch(() => {}); // A device may defer playback until the target is visible.
+}
+
+function hideFilm(current) {
+  plane.hidden = true;
+  plane.classList.remove('playing');
+  if (current.audio?.gain) current.audio.gain.gain.value = 0;
+  else current.clip.muted = true;
+  stopChime(current);
+  current.clip.pause();
+  if (current.clip.readyState) current.clip.currentTime = 0;
+}
+
+function filmError(current) {
+  if (!onCover(current)) return;
+  current.tracking.filmFailed = true;
+  hideFilm(current);
+  show('Обложка обнаружена', 'Не удалось воспроизвести ролик на обложке.', 'Запустить ролик');
+}
+
+async function playFilm(current) {
+  if (!onCover(current)) return;
+  const attempt = current.tracking;
+  const run = ++current.playbackRun;
+  const active = () => run === current.playbackRun && current.tracking === attempt && onCover(current);
+  const clip = current.clip;
+  attempt.filmFailed = false;
+  plane.hidden = false;
+  refreshSound(current);
+  try {
+    await clip.play();
+  } catch (error) {
+    if (!active()) return;
+    if (error.name !== 'NotAllowedError' || clip.muted) { filmError(current); return; }
+    current.soundEnabled = false;
+    clip.muted = true;
+    refreshSound(current);
+    try { await clip.play(); } catch { if (active()) filmError(current); return; }
+  }
+  if (!active()) return;
+  plane.classList.add('playing');
+  playChime(current);
+}
+
+function loseCover(current) {
+  current.playbackRun++;
+  if (current.tracking) {
+    current.tracking.found = false;
+    current.tracking.sounded = false;
+    current.tracking.filmFailed = false;
+  }
+  hideFilm(current);
 }
 
 function stopTracking(current) {
   const attempt = current.tracking;
   if (!attempt) return;
-  stopChime(current);
+  loseCover(current);
   current.tracking = null;
   attempt.cancel.abort();
   clearInterval(attempt.watchdog);
@@ -101,7 +182,6 @@ function stopTracking(current) {
     attempt.controller.dispose();
     attempt.controller.worker.terminate();
   }
-  setEffects?.(false);
 }
 
 function releaseCamera() {
@@ -114,6 +194,11 @@ function releaseCamera() {
     current.audio.cancel.abort();
     current.audio.context.close().catch(() => {});
   }
+  current.clip.pause();
+  current.clip.removeAttribute('src');
+  current.clip.load();
+  plane.hidden = true;
+  plane.replaceChildren();
   current.stream?.getTracks().forEach(track => track.stop());
   video.pause();
   video.srcObject = null;
@@ -193,7 +278,7 @@ async function loadTarget(Compiler, signal) {
   throw new Error('Не удалось загрузить данные обложки. Проверьте интернет и повторите распознавание.');
 }
 
-// MindAR measures marker coordinates from the bottom left. The canvas starts
+// MindAR measures marker coordinates from the bottom left. The video plane starts
 // at the top left. Apply the same centred crop as the camera's object-fit:cover.
 function placeOverlay(tracking, worldMatrix) {
   const width = stage.clientWidth;
@@ -202,13 +287,13 @@ function placeOverlay(tracking, worldMatrix) {
   const viewport = new DOMMatrix().translate(width / 2, height / 2)
     .scale(video.videoWidth * fit / 2, -video.videoHeight * fit / 2, 1);
   const matrix = viewport.multiply(tracking.projection)
-    .multiply(new DOMMatrix(worldMatrix)).multiply(tracking.canvasToMarker);
+    .multiply(new DOMMatrix(worldMatrix)).multiply(tracking.planeToMarker);
   // Use a planar projective transform. An independent Z axis keeps the CSS
-  // matrix invertible so browsers paint the canvas at every valid pose.
+  // matrix invertible so browsers paint the video at every valid pose.
   matrix.m13 = matrix.m23 = matrix.m43 = 0;
   matrix.m31 = matrix.m32 = matrix.m34 = 0;
   matrix.m33 = 1;
-  canvas.style.transform = matrix.toString();
+  plane.style.transform = matrix.toString();
 }
 
 async function startTracking(current) {
@@ -229,7 +314,6 @@ async function startTracking(current) {
     const bytes = current.target || await loadTarget(Compiler, attempt.cancel.signal);
     if (!active()) return;
     current.target = bytes;
-    setEffects ||= createEffects(canvas);
     video.width = video.videoWidth;
     video.height = video.videoHeight;
     const controller = new Controller({
@@ -239,14 +323,16 @@ async function startTracking(current) {
         if (!active()) return;
         attempt.lastFrame = performance.now();
         if (data.type !== 'updateMatrix' || data.targetIndex !== 0) return;
+        if (document.hidden || video.srcObject?.getVideoTracks()[0]?.muted) return;
         const found = Boolean(data.worldMatrix);
         if (found) placeOverlay(attempt, data.worldMatrix);
-        setEffects(found);
         if (found === attempt.found) return;
-        attempt.found = found;
-        attempt.sounded = false;
-        if (found) playChime(current);
-        else stopChime(current);
+        if (found) {
+          attempt.found = true;
+          playFilm(current);
+        } else {
+          loseCover(current);
+        }
         show(found ? 'Обложка обнаружена ✓' : 'Ищем обложку…',
           found ? 'Держите портрет в кадре.' : 'Наведите камеру на портрет Деда Мороза.');
       }
@@ -256,7 +342,7 @@ async function startTracking(current) {
     const {dimensions} = controller.addImageTargetsFromBuffer(bytes);
     const [w, h] = dimensions[0];
     attempt.projection = new DOMMatrix(controller.getProjectionMatrix());
-    attempt.canvasToMarker = new DOMMatrix().translate(0, h).scale(w / canvas.width, -h / canvas.height, 1);
+    attempt.planeToMarker = new DOMMatrix().translate(0, h).scale(w / current.clip.width, -h / current.clip.height, 1);
     await controller.dummyRun(video);
     if (!active()) return;
     attempt.lastFrame = performance.now();
@@ -278,15 +364,15 @@ async function startTracking(current) {
 
 async function openCamera() {
   releaseCamera();
-  const current = {};
+  const current = {playbackRun: 0};
   session = current;
   intro.hidden = true;
   stage.hidden = false;
   show('Включаем камеру…', 'Ожидаем изображение.');
   stop.focus({preventScroll: true});
   soundButton.hidden = false;
-  enableSound(current);
   try {
+    prepareMedia(current);
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('Откройте HTTPS-ссылку в Safari на iPhone или Chrome на Android.');
     }
@@ -315,6 +401,12 @@ async function openCamera() {
       releaseCamera();
       show('Камера остановлена', 'Видеопоток прервался. Включите камеру снова.', 'Включить камеру');
     };
+    track.addEventListener('mute', () => {
+      if (session === current && current.tracking) {
+        loseCover(current);
+        show('Ищем обложку…', 'Наведите камеру на портрет Деда Мороза.');
+      }
+    });
     track.addEventListener('ended', ended, {once: true});
     if (track.readyState === 'ended') { ended(); return; }
     video.muted = true;
@@ -335,20 +427,28 @@ if (stage) {
   soundButton.addEventListener('click', () => {
     const current = session;
     if (!current) return;
-    if (current.audio?.enabled && current.audio.context.state === 'running') {
-      current.audio.enabled = false;
-      stopChime(current);
-      soundLabel(current, 'Включить звук');
-    } else {
-      if (current.tracking) current.tracking.sounded = false;
-      enableSound(current);
-    }
+    current.soundEnabled = !current.soundEnabled;
+    if (current.soundEnabled) {
+      current.clip.muted = false;
+      current.audio?.context.resume().then(() => playChime(current)).catch(() => {
+        if (session === current) { current.soundEnabled = false; refreshSound(current); }
+      });
+    } else stopChime(current);
+    refreshSound(current);
+    if (onCover(current) && current.clip.paused) playFilm(current);
   });
   document.addEventListener('visibilitychange', () => {
-    if (session && document.hidden) stopChime(session);
+    if (session?.tracking && document.hidden) {
+      loseCover(session);
+      show('Ищем обложку…', 'Наведите камеру на портрет Деда Мороза.');
+    }
   });
   retry.addEventListener('click', () => {
-    if (session?.stream) startTracking(session);
+    if (session?.tracking?.filmFailed && onCover(session)) {
+      if (session.clip.error) session.clip.load();
+      show('Обложка обнаружена ✓', 'Держите портрет в кадре.');
+      playFilm(session);
+    } else if (session?.stream) startTracking(session);
     else openCamera();
   });
   video.addEventListener('resize', () => {
