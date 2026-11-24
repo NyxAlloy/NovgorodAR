@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#161828" />
+  <title>Оживи обложку — Новгородские Вести</title>
+  <link rel="stylesheet" href="assets/winter-camera-14732513.css" />
+</head>
+<body>
+  <main id="intro" class="intro">
+    <div class="panel">
+      <div class="eyebrow">Новгородские Вести · WebAR</div>
+      <h1>Газета оживает</h1>
+      <p>Наведите камеру на портрет Деда Мороза в газете. Дед Мороз оживёт и помашет вам рукой.</p>
+      <img class="cover-preview" src="assets/winter-illustration.jpg" alt="Дед Мороз у новогодней ёлки" />
+      <button type="button" id="startButton" class="primary">Включить камеру и звук</button>
+      <p class="note"><a href="./assets/newspaper-633251ca.jpg">Открыть газету для печати или второго экрана</a></p>
+    </div>
+  </main>
+
+  <section id="cameraStage" aria-label="Камера дополненной реальности" hidden>
+    <video id="camera" autoplay playsinline muted disablepictureinpicture disableremoteplayback aria-label="Изображение с камеры"></video>
+    <div id="portraitPlane" aria-hidden="true" hidden></div>
+    <div class="hud">
+      <div class="status" role="status"><span aria-label="Дополненная реальность">AR</span><span id="status"></span></div>
+      <div class="controls">
+        <button type="button" id="soundButton" class="secondary" aria-pressed="false">Включить звук</button>
+        <button type="button" id="stopButton" class="secondary">Закрыть</button>
+      </div>
+      <div class="hint">
+        <p id="detail" aria-live="polite"></p>
+        <button type="button" id="retryButton" class="secondary" hidden></button>
+      </div>
+    </div>
+  </section>
+  <script src="assets/winter-camera-7b95b57c.js"></script>
+</body>
+</html>
